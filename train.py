@@ -10,16 +10,18 @@ def main():
     protein_encoder_id = "khairi/Esm2-8M"
     language_model_id = "khairi/SmolLM-135M"
     num_proc = 4
-    batch_size = 16
+    batch_size = 8
     protein_max_length = 512
     adapter_hidden_size = 256
     max_steps = 10000
     warmup_steps = 2000
-    learning_rate = 3e-4
+    learning_rate = 1e-3
     beta1 = 0.9
     beta2 = 0.98
-    mode ='finetuning'
+    weight_decay = 0.1
+    mode ='pretraining'
     log_every_n_steps = 50
+    gradient_clip_val = 0.1
     
     
     data_module = ProtreinTextDataModule(
@@ -40,7 +42,8 @@ def main():
         mode=mode,
         learning_rate=learning_rate,
         beta1=beta1,
-        beta2=beta2
+        beta2=beta2,
+        weight_decay=weight_decay
     )
     
     csv_logger = CSVLogger(save_dir="experim", name="logs", flush_logs_every_n_steps=log_every_n_steps)
@@ -55,7 +58,8 @@ def main():
         log_every_n_steps=log_every_n_steps,
         val_check_interval=log_every_n_steps,
         logger=[csv_logger],# wandb_logger],
-        callbacks=[model_checkpoint, model_summary, progress_bar]
+        callbacks=[model_checkpoint, model_summary, progress_bar],
+        gradient_clip_val=gradient_clip_val
     )
     
     trainer.fit(model, data_module)

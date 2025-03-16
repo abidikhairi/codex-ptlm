@@ -2,7 +2,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModel, LlamaForCausalLM
 
 def main():
-    dataset_id = "khairi/ptlm-tiny-dataset"
+    dataset_id = "khairi/ptlm-dataset"
     protein_encoder_id = "khairi/Esm2-8M"
     language_model_id = "khairi/SmolLM-135M"
 
