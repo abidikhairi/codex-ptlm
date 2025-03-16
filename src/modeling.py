@@ -255,7 +255,7 @@ class ProteinTextLanguageModel(LightningModule):
             
             inputs_embeds = self._get_inputs_embeds(**inputs)
             
-            output = self.language_model.generate(inputs_embeds=inputs_embeds)
+            output = self.language_model.generate(inputs_embeds=inputs_embeds, attention_mask=inputs['attention_mask'])
 
             output = self.tokenizers['text'].batch_decode(output[0], skip_special_tokens=False)
             output = "".join(output)

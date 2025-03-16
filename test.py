@@ -5,8 +5,8 @@ from datasets import load_dataset
 from torchmetrics.text import EditDistance, TranslationEditRate
 
 def main():
-    model = ProteinTextLanguageModel.load_from_checkpoint('lightning_logs/version_1/checkpoints/last-v1.ckpt')
-    model = model.to('cuda')
+    model = ProteinTextLanguageModel.load_from_checkpoint('experim/ckpt/last.ckpt')
+    model = model.to('cpu')
     
     edit_distance = EditDistance()
     ter = TranslationEditRate()
@@ -20,7 +20,7 @@ def main():
     for row in tqdm(dataset):
         sequence = row['Sequence']
         target = row['Answer'].replace("ASSISTANT:", "").strip()
-        output = model.predict_step(sequence)
+        output = model.predict_step(sequence, user_input='What is the name of this protein?')
         
         targets.append(target.lower())
         predictions.append(output[0].lower())
@@ -31,7 +31,7 @@ def main():
     pd.DataFrame({
         "prediction": predictions,
         "targets": targets
-    }).to_csv('predictions.csv', index=False)
+    }).to_csv('data/predictions.csv', index=False)
     
     print(f'Average edit distance: {score}')
     print(f'Average translation edit rate: {score1}')

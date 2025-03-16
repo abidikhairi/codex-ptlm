@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader
 
 
 class ProtreinTextDataModule(LightningDataModule):
+    
+    SYSTEM_PROMPT = 'You are a helpful AI assistant named Codex, trained by Majesteye.'
+    
     train_data: Dataset = None
     valid_data: Dataset = None
     test_data: Dataset = None
@@ -46,7 +49,14 @@ class ProtreinTextDataModule(LightningDataModule):
     def _tokenize_text(self, example):
         text_inputs = []
         for x, y in zip(example['Instruction'], example['Answer']):
-            text_inputs.append(f'{x} <|im_start|> {y} <|im_end|>')
+            messages = [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": x},
+                {"role": "assistant", "content": y}
+            ]
+            
+            input_text = self.text_tokenizer.apply_chat_template(messages)
+            text_inputs.append(input_text)
         
         inputs = self.text_tokenizer(
             text_inputs,
@@ -59,8 +69,8 @@ class ProtreinTextDataModule(LightningDataModule):
         return inputs
     
     def _prepare_dataset(self, dataset: Dataset):
-        return dataset.map(self._tokenize_protein, batch_size=self.batch_size, batched=True) \
-            .map(self._tokenize_text, batch_size=self.batch_size, batched=True) \
+        return dataset.map(self._tokenize_protein, batch_size=512, batched=True) \
+            .map(self._tokenize_text, batch_size=512, batched=True) \
             .remove_columns('Entry')
 
     def setup(self, stage=None):
