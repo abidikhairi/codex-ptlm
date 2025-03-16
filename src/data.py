@@ -4,6 +4,8 @@ from transformers import AutoTokenizer
 from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
 
+from src.chat import CHAT_TEMPLATE
+
 
 class ProtreinTextDataModule(LightningDataModule):
     
@@ -47,25 +49,35 @@ class ProtreinTextDataModule(LightningDataModule):
         return inputs
     
     def _tokenize_text(self, example):
-        text_inputs = []
+        conversations = []
         for x, y in zip(example['Instruction'], example['Answer']):
             messages = [
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": x},
                 {"role": "assistant", "content": y}
             ]
-            
-            input_text = self.text_tokenizer.apply_chat_template(messages)
-            text_inputs.append(input_text)
+            conversations.append(messages)
         
-        inputs = self.text_tokenizer(
-            text_inputs,
+        inputs = self.text_tokenizer.apply_chat_template(
+            conversations,
+            tokenize=True,
+            return_assistant_tokens_mask=True,
+            return_dict=True,
+            chat_template=CHAT_TEMPLATE,
             return_tensors='pt',
             padding=True,
             max_length=self.protein_max_length,
             truncation=True
         )
+        # text_inputs.append(input_text)
         
+        # inputs = self.text_tokenizer(
+        #     text_inputs,
+        #     return_tensors='pt',
+        #     padding=True,
+        #     max_length=self.protein_max_length,
+        #     truncation=True,
+        # )
         return inputs
     
     def _prepare_dataset(self, dataset: Dataset):
@@ -87,24 +99,28 @@ class ProtreinTextDataModule(LightningDataModule):
         attention_mask = []
         protein_input_ids = []
         protein_attention_mask = []
+        assistant_masks = []
         
         for row in rows:
             input_ids.append(row['input_ids'])
             attention_mask.append(row['attention_mask'])
             protein_input_ids.append(row['protein_input_ids'])
             protein_attention_mask.append(row['protein_attention_mask'])
-        
+            assistant_masks.append(row['assistant_masks'])
+            
         input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=self.text_tokenizer.pad_token_id)
-        attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
-
         protein_input_ids = torch.nn.utils.rnn.pad_sequence(protein_input_ids, batch_first=True, padding_value=self.protein_tokenizer.pad_token_id)
+
+        attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
+        assistant_masks = torch.nn.utils.rnn.pad_sequence(assistant_masks, batch_first=True, padding_value=0)
         protein_attention_mask = torch.nn.utils.rnn.pad_sequence(protein_attention_mask, batch_first=True, padding_value=0)
 
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
             'protein_input_ids': protein_input_ids,
-            'protein_attention_mask': protein_attention_mask
+            'protein_attention_mask': protein_attention_mask,
+            'assistant_masks': assistant_masks
         }
     
     def train_dataloader(self):
@@ -121,7 +137,8 @@ class ProtreinTextDataModule(LightningDataModule):
             dataset=self.valid_data,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_proc
+            num_workers=self.num_proc,
+            collate_fn=self._collate_fn
         )
     
     def test_dataloader(self):
@@ -129,6 +146,7 @@ class ProtreinTextDataModule(LightningDataModule):
             dataset=self.valid_data,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_proc
+            num_workers=self.num_proc,
+            collate_fn=self._collate_fn
         )
     
