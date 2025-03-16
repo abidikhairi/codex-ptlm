@@ -12,7 +12,11 @@ from transformers import (
     get_linear_schedule_with_warmup
 )
 from pytorch_lightning import LightningModule
-
+from peft import (
+    LoraConfig,
+    TaskType,
+    get_peft_model
+)
 
 class ProteinAdapter(nn.Module):
     def __init__(
@@ -35,6 +39,9 @@ class ProteinAdapter(nn.Module):
 
 
 class ProteinTextLanguageModel(LightningModule):
+    
+    SYSTEM_PROMPT = 'You are a helpful AI assistant named Codex, trained by Majesteye.'
+    
     def __init__(self,
         protein_encoder: str,
         language_model: str,
@@ -44,27 +51,35 @@ class ProteinTextLanguageModel(LightningModule):
         mode: Literal['finetuning', 'pretraining'] = 'pretraining',
         learning_rate: float = 3e-4,
         beta1: float = 0.99,
-        beta2: float = 0.98
+        beta2: float = 0.98,
+        weight_decay: float = 0.1
     ):
         super().__init__()
         
         self.protein_tower: AutoModel = AutoModel.from_pretrained(protein_encoder)
-        self.language_model: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(language_model)
         
+        # self.lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1)
+        # self.language_model: LlamaForCausalLM = get_peft_model(
+        #     model=LlamaForCausalLM.from_pretrained(language_model),
+        #     peft_config=self.lora_config
+        # )
+        self.language_model: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(language_model)
+                
         self.protein_adapter = ProteinAdapter(
             plm_config=self.protein_tower.config,
             lm_config=self.language_model.config,
             intermediate_size=adapter_hidden_size
         )
+
+        self.protein_tower = self.protein_tower.train(mode=False)
+        self.language_model = self.language_model.train(mode=True)
+        self.protein_adapter = self.protein_adapter.train(mode=True)
         
-        if mode == 'pretraining':
-            self.protein_tower = self.protein_tower.requires_grad_(False)
-            self.language_model = self.language_model.requires_grad_(False)
-            self.protein_adapter = self.protein_adapter.requires_grad_(True)
-        else:
-            self.protein_tower = self.protein_tower.requires_grad_(False)
-            self.language_model = self.language_model.requires_grad_(True)
-            self.protein_adapter = self.protein_adapter.requires_grad_(True)
+        # if mode == 'pretraining':
+        # else:
+        #     self.protein_tower = self.protein_tower.train(mode=True)
+        #     self.language_model = self.language_model.train(mode=False)
+        #     self.protein_adapter = self.protein_adapter.train(mode=True)
         
         self.tokenizers = {}
         self.tokenizers['protein'] = AutoTokenizer.from_pretrained(protein_encoder)
@@ -81,14 +96,16 @@ class ProteinTextLanguageModel(LightningModule):
         self.learning_rate = learning_rate
         self.beta1 = beta1
         self.beta2 = beta2
+        self.weight_decay = weight_decay
         self.save_hyperparameters()
 
 
     def configure_optimizers(self):
         optimizer = optim.Adam(
-            list(self.language_model.parameters()) + list(self.protein_adapter.parameters()) + list(self.protein_adapter.parameters()),
+            list(self.language_model.parameters()) + list(self.protein_adapter.parameters()) + list(self.protein_tower.parameters()),
             lr=self.learning_rate,
-            betas=(self.beta1, self.beta2)
+            betas=(self.beta1, self.beta2),
+            weight_decay=self.weight_decay
         )
         
         lr_scheduler = get_linear_schedule_with_warmup(
@@ -112,7 +129,7 @@ class ProteinTextLanguageModel(LightningModule):
         shift_attention_mask = attention_mask[:, -(logits.shape[1] - 1):]
         shift_logits = logits[..., :-1, :][shift_attention_mask != 0]
         shift_labels = labels[..., 1:][shift_attention_mask != 0]
-                
+
         return self.loss_fn(
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device)
         )
@@ -123,6 +140,7 @@ class ProteinTextLanguageModel(LightningModule):
         attention_mask: Optional[torch.Tensor] = None,
         protein_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        # inputs_embeds = self.language_model.base_model.model.model.embed_tokens(input_ids)
         inputs_embeds = self.language_model.model.embed_tokens(input_ids)
         
         protein_outputs = self.protein_tower(
@@ -182,12 +200,10 @@ class ProteinTextLanguageModel(LightningModule):
         attention_mask = batch["attention_mask"]
         protein_input_ids = batch["protein_input_ids"]
         protein_attention_mask = batch["protein_attention_mask"]
-        
+        assistant_mask = batch['assistant_masks']
         labels = batch['input_ids'].clone()
-        im_start_id = self.tokenizers['text'].convert_tokens_to_ids('<|im_start|>')
-        mask = (labels == im_start_id).cumsum(dim=1) > 0
-        labels[~mask] = -100
-        
+        labels[assistant_mask == 0] = -100
+
         outputs = self(
             input_ids=input_ids,
             protein_ids=protein_input_ids,
@@ -206,11 +222,9 @@ class ProteinTextLanguageModel(LightningModule):
         attention_mask = batch["attention_mask"]
         protein_input_ids = batch["protein_input_ids"]
         protein_attention_mask = batch["protein_attention_mask"]
+        assistant_mask = batch['assistant_masks']
         labels = batch['input_ids'].clone()
-        
-        im_start_id = self.tokenizers['text'].convert_tokens_to_ids('<|im_start|>')
-        mask = (labels == im_start_id).cumsum(dim=1) > 0
-        labels[~mask] = -100
+        labels[assistant_mask == 0] = -100
         
         outputs = self(
             input_ids=input_ids,
@@ -242,9 +256,13 @@ class ProteinTextLanguageModel(LightningModule):
         for seq in sequences:
             protein_inputs = self.tokenizers['protein'](seq, return_tensors='pt', padding=True)
             
-            prompt = f"USER: <protein> \n {user_input} <|im_start|>"
-            prompt = self.tokenizers['text'](prompt, return_tensors='pt')
-            
+            messages = [
+                {'role': 'system', 'content': self.SYSTEM_PROMPT},
+                {'role': "user", 'content': f'<protein> \n {user_input}'}
+            ]
+            messages = self.tokenizers['text'].apply_chat_template(messages, tokenize=False)
+            prompt = self.tokenizers['text'](messages, return_tensors='pt')
+
             inputs = {
                 'protein_ids': protein_inputs['input_ids'],
                 'protein_mask': protein_inputs['attention_mask'],
@@ -255,11 +273,14 @@ class ProteinTextLanguageModel(LightningModule):
             
             inputs_embeds = self._get_inputs_embeds(**inputs)
             
-            output = self.language_model.generate(inputs_embeds=inputs_embeds, attention_mask=inputs['attention_mask'])
+            output = self.language_model.generate(
+                inputs_embeds=inputs_embeds,
+                attention_mask=inputs['attention_mask'],
+                max_new_tokens=50
+            )
 
             output = self.tokenizers['text'].batch_decode(output[0], skip_special_tokens=False)
             output = "".join(output)
-            output = output.replace('ASSISTANT:', '').strip()
             
             outputs.append(output)
     
